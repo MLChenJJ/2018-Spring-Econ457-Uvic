@@ -1,0 +1,690 @@
+第一问：
+from __future__ import division
+import math
+import numpy as np
+import scipy.linalg as la
+from scipy.special import gammaln
+import sympy as sym
+from matplotlib import pyplot as plt
+from functools import reduce
+import scipy.interpolate as interp
+
+
+
+def ckron(*arrays):
+   
+    return reduce(np.kron, arrays)
+
+def gridmake(*arrays):
+    
+    if all([i.ndim == 1 for i in arrays]):
+        d = len(arrays)
+        if d == 2:
+            out = _gridmake2(*arrays)
+        else:
+            out = _gridmake2(arrays[0], arrays[1])
+            for arr in arrays[2:]:
+                out = _gridmake2(out, arr)
+
+        return out
+    else:
+        raise NotImplementedError("Come back here")
+
+def _gridmake2(x1, x2):
+    
+    if x1.ndim == 1 and x2.ndim == 1:
+        return np.column_stack([np.tile(x1, x2.shape[0]),
+                               np.repeat(x2, x1.shape[0])])
+    elif x1.ndim > 1 and x2.ndim == 1:
+        first = np.tile(x1, (x2.shape[0], 1))
+        second = np.repeat(x2, x1.shape[0])
+        return np.column_stack([first, second])
+    else:
+        raise NotImplementedError("Come back here")   
+
+def _qnwtrap1(n, a, b):
+    
+    if n < 1:
+        raise ValueError("n must be at least one")
+
+    nodes = np.linspace(a, b, n)
+    dx = nodes[1] - nodes[0]
+
+    weights = dx * np.ones(n)
+    weights[0] *= 0.5
+    weights[-1] *= 0.5
+
+    return nodes, weights
+
+#Compute univariate Simpson quadrature nodes and weights
+
+def _qnwsimp1(n, a, b):
+    
+    if n % 2 == 0:
+        print("WARNING qnwsimp: n must be an odd integer. Increasing by 1")
+        n += 1
+
+    nodes = np.linspace(a, b, n)
+    dx = nodes[1] - nodes[0]
+    weights = np.tile([2.0, 4.0], (n + 1) // 2)
+    weights = weights[:n]
+    weights[0] = weights[-1] = 1
+    weights = (dx / 3.0) * weights
+
+    return nodes, weights    
+
+def _qnwlege1(n, a, b):
+    
+    # import ipdb; ipdb.set_trace()
+    maxit = 100
+    m = np.fix((n + 1) / 2.0).astype(int)
+    xm = 0.5 * (b + a)
+    xl = 0.5 * (b - a)
+    nodes = np.zeros(n)
+
+    weights = nodes.copy()
+    i = np.arange(m, dtype='int')
+
+    z = np.cos(np.pi * ((i + 1.0) - 0.25) / (n + 0.5))
+
+    for its in range(maxit):
+        p1 = 1.0
+        p2 = 0.0
+        for j in range(1, n+1):
+            p3 = p2
+            p2 = p1
+            p1 = ((2 * j - 1) * z * p2 - (j - 1) * p3) / j
+
+        pp = n * (z * p1 - p2)/(z * z - 1.0)
+        z1 = z.copy()
+        z = z1 - p1/pp
+        if all(np.abs(z - z1) < 1e-14):
+            break
+
+    if its == maxit - 1:
+        raise ValueError("Maximum iterations in _qnwlege1")
+
+    nodes[i] = xm - xl * z
+    nodes[- i - 1] = xm + xl * z
+
+    weights[i] = 2 * xl / ((1 - z * z) * pp * pp)
+    weights[- i - 1] = weights[i]
+
+    return nodes, weights
+
+        
+def _make_multidim_func(one_d_func, n, *args):
+   
+    args = list(args)
+    n = np.asarray(n)
+    args = list(map(np.asarray, args))
+
+    if all([x.size == 1 for x in [n] + args]):
+        return one_d_func(n, *args)
+
+    d = n.size
+
+    for i in range(len(args)):
+        if args[i].size == 1:
+            args[i] = np.repeat(args[i], d)
+
+    nodes = []
+    weights = []
+
+    for i in range(d):
+        ai = [x[i] for x in args]
+        _1d = one_d_func(n[i], *ai)
+        nodes.append(_1d[0])
+        weights.append(_1d[1])
+
+    weights = ckron(*weights[::-1])  # reverse ordered tensor product
+
+    nodes = gridmake(*nodes)
+    return nodes, weights    
+
+
+def Quadrature( f, X, xmin, xmax, ymin=0, ymax=1, fig=None, leg=True ):
+    #f(x_i) values
+    Y = f( X )
+    
+    #X array
+    Xarray = np.linspace( xmin, xmax, 1000 )
+    #X area
+    Xarea = np.linspace( X[0], X[-1], 1000 )
+    #F array
+    Yarray = f( Xarray )
+    
+    #Lagrange polynomial
+    Ln = interp.lagrange( X, Y )
+    #Interpolated array
+    Parray = Ln( Xarray )
+    #Interpolated array for area
+    Parea = Ln( Xarea )
+    
+    #Plotting
+    if fig==None:
+        fig = plt.figure( figsize = (8,8) )
+    ax = fig.add_subplot(111)
+    #Function
+    ax.plot( Xarray, Yarray, linewidth = 3, color = "blue", label="$f(x)$" )
+    #Points
+    ax.plot( X, Y, "o", color="red", label="points", zorder = 10 )
+    #Interpolator
+    ax.plot( Xarray, Parray, linewidth = 2, color = "black", label="$P_{%d}(x)$"%(len(X)-1) )
+    #Area
+    ax.fill_between( Xarea, Parea, color="green", alpha=0.5 )
+    
+    #Format
+    ax.set_title( "%d-point Quadrature"%(len(X)), fontsize=16 )
+    ax.set_xlim( (xmin, xmax) )
+    ax.set_ylim( (ymin, ymax) )
+    ax.set_xlabel( "$x$" )
+    ax.set_ylabel( "$y$" )
+    if leg:
+        ax.legend( loc="upper left", fontsize=16 )
+    ax.grid(1)
+    plt.show()
+    
+    return ax
+
+def f(x):
+    return 1+np.cos(x)**2+x
+
+def trapezoidal(f, a, b, n):
+    h = float(b-a)/n
+    result = 0.5*f(a) + 0.5*f(b)
+    for i in range(1, n):
+        result += f(a + i*h)
+    result *= h
+    return result
+
+
+
+
+#5.2 Gaussian Quadrature                    ***************************
+
+def _qnwnorm1(n):
+    
+    maxit = 100
+    pim4 = 1 / np.pi**(0.25)
+    m = np.fix((n + 1) / 2).astype(int)
+    nodes = np.zeros(n)
+    weights = np.zeros(n)
+
+    for i in range(m):
+        if i == 0:
+            z = np.sqrt(2*n+1) - 1.85575 * ((2 * n + 1)**(-1 / 6.1))
+        elif i == 1:
+            z = z - 1.14 * (n ** 0.426) / z
+        elif i == 2:
+            z = 1.86 * z + 0.86 * nodes[0]
+        elif i == 3:
+            z = 1.91 * z + 0.91 * nodes[1]
+        else:
+            z = 2 * z + nodes[i-2]
+
+        its = 0
+
+        while its < maxit:
+            its += 1
+            p1 = pim4
+            p2 = 0
+            for j in range(1, n+1):
+                p3 = p2
+                p2 = p1
+                p1 = z * math.sqrt(2.0/j) * p2 - math.sqrt((j - 1.0) / j) * p3
+
+            pp = math.sqrt(2 * n) * p2
+            z1 = z
+            z = z1 - p1/pp
+            if abs(z - z1) < 1e-14:
+                break
+
+        if its == maxit:
+            raise ValueError("Failed to converge in _qnwnorm1")
+
+        nodes[n - 1 - i] = z
+        nodes[i] = -z
+        weights[i] = 2 / (pp*pp)
+        weights[n - 1 - i] = weights[i]
+
+    weights /= math.sqrt(math.pi)
+    nodes = nodes * math.sqrt(2.0)
+
+    return nodes, weights
+
+def _qnwbeta1(n, a=1.0, b=1.0):
+    
+    # We subtract one and write a + 1 where we actually want a, and a
+    # where we want a - 1
+    a = a - 1
+    b = b - 1
+
+    maxiter = 25
+
+    # Allocate empty space
+    nodes = np.zeros(n)
+    weights = np.zeros(n)
+
+    # Find "reasonable" starting values.  Why these numbers?
+    for i in range(n):
+        if i == 0:
+            an = a/n
+            bn = b/n
+            r1 = (1+a) * (2.78/(4+n*n) + .768*an/n)
+            r2 = 1 + 1.48*an + .96*bn + .452*an*an + .83*an*bn
+            z = 1 - r1/r2
+        elif i == 1:
+            r1 = (4.1+a) / ((1+a)*(1+0.156*a))
+            r2 = 1 + 0.06 * (n-8) * (1+0.12*a)/n
+            r3 = 1 + 0.012*b * (1+0.25*abs(a))/n
+            z = z - (1-z) * r1 * r2 * r3
+        elif i == 2:
+            r1 = (1.67+0.28*a)/(1+0.37*a)
+            r2 = 1+0.22*(n-8)/n
+            r3 = 1+8*b/((6.28+b)*n*n)
+            z = z-(nodes[0]-z)*r1*r2*r3
+        elif i == n - 2:
+            r1 = (1+0.235*b)/(0.766+0.119*b)
+            r2 = 1/(1+0.639*(n-4)/(1+0.71*(n-4)))
+            r3 = 1/(1+20*a/((7.5+a)*n*n))
+            z = z+(z-nodes[-4])*r1*r2*r3
+        elif i == n - 1:
+            r1 = (1+0.37*b) / (1.67+0.28*b)
+            r2 = 1 / (1+0.22*(n-8)/n)
+            r3 = 1 / (1+8*a/((6.28+a)*n*n))
+            z = z+(z-nodes[-3])*r1*r2*r3
+        else:
+            z = 3*nodes[i-1] - 3*nodes[i-2] + nodes[i-3]
+
+        ab = a+b
+
+        # Root finding
+        its = 0
+        z1 = -100
+        while abs(z - z1) > 1e-10 and its < maxiter:
+            temp = 2 + ab
+            p1 = (a-b + temp*z)/2
+            p2 = 1
+
+            for j in range(2, n+1):
+                p3 = p2
+                p2 = p1
+                temp = 2*j + ab
+                aa = 2*j * (j+ab)*(temp-2)
+                bb = (temp-1) * (a*a - b*b + temp*(temp-2) * z)
+                c = 2 * (j - 1 + a) * (j - 1 + b) * temp
+                p1 = (bb*p2 - c*p3)/aa
+
+            pp = (n*(a-b-temp*z) * p1 + 2*(n+a)*(n+b)*p2)/(temp*(1 - z*z))
+            z1 = z
+            z = z1 - p1/pp
+
+            if abs(z - z1) < 1e-12:
+                break
+
+            its += 1
+
+        if its == maxiter:
+            raise ValueError("Max Iteration reached.  Failed to converge")
+
+        nodes[i] = z
+        weights[i] = temp/(pp*p2)
+
+    nodes = (1-nodes)/2
+    weights = weights * math.exp(gammaln(a+n) + gammaln(b+n)
+                                 - gammaln(n+1) - gammaln(n+ab+1))
+    weights = weights / (2*math.exp(gammaln(a+1) + gammaln(b+1)
+                         - gammaln(ab+2)))
+
+    return nodes, weights
+
+def _qnwgamma1(n, a=None):
+    
+    if a is None:
+        a = 0
+    else:
+        a -= 1
+
+    maxit = 10
+
+    factor = -math.exp(gammaln(a+n) - gammaln(n) - gammaln(a+1))
+    nodes = np.zeros(n)
+    weights = np.zeros(n)
+
+    # Create nodes
+    for i in range(n):
+        # Reasonable starting values
+        if i == 0:
+            z = (1+a) * (3+0.92*a) / (1 + 2.4*n + 1.8*a)
+        elif i == 1:
+            z = z + (15 + 6.25*a) / (1 + 0.9*a + 2.5*n)
+        else:
+            j = i-1
+            z = z + ((1 + 2.55*j) / (1.9*j) + 1.26*j*a / (1 + 3.5*j)) * \
+                (z - nodes[j-1]) / (1 + 0.3*a)
+
+        # root finding iterations
+        its = 0
+        z1 = -10000
+        while abs(z - z1) > 1e-10 and its < maxit:
+            p1 = 1.0
+            p2 = 0.0
+            for j in range(1, n+1):
+                p3 = p2
+                p2 = p1
+                p1 = ((2*j - 1 + a - z)*p2 - (j - 1 + a)*p3) / j
+
+            pp = (n*p1 - (n+a)*p2) / z
+            z1 = z
+            z = z1 - p1/pp
+            its += 1
+
+        if its == maxit:
+            raise ValueError('Failure to converge')
+
+        nodes[i] = z
+        weights[i] = factor / (pp*n*p2)
+
+    return nodes, weights
+
+def qnwnorm(n, mu=None, sig2=None, usesqrtm=False):
+    
+    n = np.asarray(n)
+    d = n.size
+
+    if mu is None:
+        mu = np.zeros(d)
+    else:
+        mu = np.asarray(mu)
+
+    if sig2 is None:
+        sig2 = np.eye(d)
+    else:
+        sig2 = np.asarray(sig2).reshape(d, d)
+
+    if all([x.size == 1 for x in [n, mu, sig2]]):
+        nodes, weights = _qnwnorm1(n)
+    else:
+        nodes = []
+        weights = []
+
+        for i in range(d):
+            _1d = _qnwnorm1(n[i])
+            nodes.append(_1d[0])
+            weights.append(_1d[1])
+
+        nodes = gridmake(*nodes)
+        weights = ckron(*weights[::-1])
+
+    if usesqrtm:
+        new_sig2 = la.sqrtm(sig2)
+    else:  # cholesky
+        new_sig2 = la.cholesky(sig2)
+
+    if d > 1:
+        nodes = nodes.dot(new_sig2) + mu  # Broadcast ok
+    else:  # nodes.dot(sig) will not be aligned in scalar case.
+        nodes = nodes * new_sig2 + mu
+
+    return nodes.squeeze(), weights
+
+
+def qnwlogn(n, mu=None, sig2=None):
+   
+    nodes, weights = qnwnorm(n, mu, sig2)
+    return np.exp(nodes), weights
+
+
+def qnwlege(n, a, b):
+    
+    return _make_multidim_func(_qnwlege1, n, a, b)
+
+
+
+
+def qnwunif(n, a, b):
+    
+    n, a, b = list(map(np.asarray, [n, a, b]))
+    nodes, weights = qnwlege(n, a, b)
+    weights = weights / np.prod(b - a)
+    return nodes, weights
+
+def qnwtrap(n, a, b):
+    
+    return _make_multidim_func(_qnwtrap1, n, a, b)
+
+def qnwsimp(n, a, b):
+    
+    return _make_multidim_func(_qnwsimp1, n, a, b)
+
+def qnwequi(n, a, b, kind="N", equidist_pp=None):
+   
+    
+    if equidist_pp is None:
+        equidist_pp = np.sqrt(np.array(list(sym.primerange(0, 7920))))
+
+    n, a, b = list(map(np.atleast_1d, list(map(np.asarray, [n, a, b]))))
+
+    d = max(list(map(len, [n, a, b])))
+    n = np.prod(n)
+
+    if a.size == 1:
+        a = np.repeat(a, d)
+
+    if b.size == 1:
+        b = np.repeat(b, d)
+
+    i = np.arange(1, n + 1)
+
+    if kind.upper() == "N":  # Neiderreiter
+        j = 2.0 ** (np.arange(1, d+1) / (d+1))
+        nodes = np.outer(i, j)
+        nodes = (nodes - np.fix(nodes)).squeeze()
+    elif kind.upper() == "W":  # Weyl
+        j = equidist_pp[:d]
+        nodes = np.outer(i, j)
+        nodes = (nodes - np.fix(nodes)).squeeze()
+    elif kind.upper() == "H":  # Haber
+        j = equidist_pp[:d]
+        nodes = np.outer(i * (i+1) / 2, j)
+        nodes = (nodes - np.fix(nodes)).squeeze()
+    elif kind.upper() == "R":  # pseudo-random
+        nodes = np.random.rand(n, d).squeeze()
+    else:
+        raise ValueError("Unknown sequence requested")
+
+    # compute nodes and weights
+    r = b - a
+    nodes = a + nodes * r
+    weights = (np.prod(r) / n) * np.ones(n)
+
+    return nodes, weights
+
+
+def quadrect(f, n, a, b, kind='lege', *args, **kwargs):
+    
+    if kind.lower() == "lege":
+        nodes, weights = qnwlege(n, a, b)
+    #elif kind.lower() == "cheb":
+        #nodes, weights = qnwcheb(n, a, b)
+    elif kind.lower() == "trap":
+        nodes, weights = qnwtrap(n, a, b)
+    elif kind.lower() == "simp":
+        nodes, weights = qnwsimp(n, a, b)
+    else:
+        nodes, weights = qnwequi(n, a, b, kind)
+
+    out = weights.dot(f(nodes, *args, **kwargs))
+    return out
+
+
+
+def qnwbeta(n, a=1.0, b=1.0):
+    return _make_multidim_func(_qnwbeta1, n, a, b)
+
+
+def qnwgamma(n, a=None):
+    
+    return _make_multidim_func(_qnwgamma1, n, a)
+
+
+def q_1_b_c(r,mu,var):
+    n = 100
+    y,w = qnwlogn(n,mu,var)
+    
+    expectedy = w@y
+    print("The expected income is:", expectedy)
+    
+    expectedutility = w@(np.power(y,1-r)/(1-r))
+    #print(type(expectedutility))
+    print("The expected utility is:", expectedutility)
+    
+    
+    ycert = np.power((1-r)*expectedutility,1/(1-r))
+    #ycert = np.sqrt((1-r)*expectedutility,(1-r))
+    
+    uycert =np.power(ycert,1-r)/(1-r)
+    print("The Certainty Equivalent income is:", ycert)
+    print("The utility of the expected income is:", uycert)
+    
+    
+    return None
+    
+
+def cal_Certainty_Equivalent(expectedutility,r):
+    return np.sqrt((1-r)*expectedutility,(1-r))
+
+
+if __name__ == '__main__':
+    r = [2,2,4]
+    mu = -0.1
+    var = [0.2,0.4,0.2]
+    i = 0
+    for i in range(3):
+        print('Case {0}: r = {1}, mu = {2}, var = {3}'.format(i+1,r[i],mu,var[i]))
+        q_1_b_c(r[i],mu,var[i])
+        print('\n\n')
+    
+    
+    print('Over!')
+
+
+
+
+
+
+
+
+
+第二问：
+运行环境要求：
+（1）python 3.5
+ (2) R语言要求安装
+（3）rpy2要求安装
+（4）在linux下进行编程并运行，从python中调用部分R语言功能
+
+import numpy as np
+import rpy2.robjects as robjects
+from matplotlib import pyplot as plt
+
+r = robjects.r
+
+
+
+def fun(ux,px,sigma2,periods,seed):
+    mu = 0
+    script1 = "set.seed("+str(seed)+")"#初始化种子
+    r(script1)
+    t_s = r.rep(0,periods)
+    t_s = list(t_s)
+    
+    for i in range(1,periods):
+        thelta = r.rnorm(1,0,np.sqrt(sigma2))[0]#通过R语言计算正太分布，挑选数值
+        t_s[i] = ux+px*t_s[i-1]+thelta
+        
+    sample_list = t_s[100:periods]
+    average = np.mean(np.array(sample_list))
+    variance = np.array(sample_list).var()
+        
+    #calculate the theoretical counterparts
+    t_E= ux/(1-px)
+    t_var = sigma2/(1-px*px)
+    
+    print('In the case u_x = {0}, p_x = {1}, mu = {2}, var = {3}, periods = {4}:'.format(ux,px,mu,sigma2,periods))
+    print('\t average = {0}, variance = {1}'.format(average,variance))
+    print('\t theoretical value: E[x_t] = {0}, Var[x_t] = {1}'.format(t_E,t_var))
+    #print(sample_list)
+    plt.plot(sample_list,'b')
+    plt.ylabel('time series')
+    plt.xlabel('periods')
+    plt.show()
+    
+
+    '''
+    plt.plot(t_s[100:periods],'ro')
+    plt.show()
+    print(t_s)
+    '''
+
+def func(ux,px,sigma2,periods):
+    mu = 0
+    itera = 1
+    average_list = []
+    variance_list = []
+    while(itera <=100):
+        seed = itera+457
+        script1 = "set.seed("+str(seed)+")"
+        r(script1)
+        t_s = r.rep(0,periods)
+        t_s = list(t_s)
+        
+        for i in range(1,periods):
+            thelta = r.rnorm(1,0,np.sqrt(sigma2))[0]
+            t_s[i] = ux+px*t_s[i-1]+thelta
+        sample_list = t_s[100:periods]
+        average = np.mean(np.array(sample_list))
+        variance = np.array(sample_list).var()
+        average_list.append(average)
+        variance_list.append(variance)
+        itera +=1
+    
+    #print('Average_list: ',average_list)
+    #print('Variance_list: ',variance_list)
+    
+    
+    fig,(ax0,ax1) = plt.subplots(nrows=2,figsize = (9,8))
+    ax0.hist(average_list,bins = 30,normed = True,histtype = 'bar',color = 'yellowgreen',alpha = 0.75,edgecolor = 'black')
+    ax0.set_title('Average_list')
+    #ax0.grid(True)
+    ax1.hist(variance_list,bins = 30,normed = True,histtype = 'bar',color = 'blue',alpha = 0.75,edgecolor = 'black')
+    ax1.set_title('Variance_list')
+    #ax1.grid(True)
+    #plt.hist(average_list,50,normed =1,facecolor = 'green',alpha = 0.75)
+    fig.subplots_adjust(hspace = 0.4)
+    
+    plt.show()
+    
+
+  
+
+
+if __name__ == '__main__':
+    
+    
+    print('Question a:')
+    fun(2, 0, 1, 200, 123)
+    print('\n\n\n')
+    
+    print('Question b:')
+    fun(1, 0.5, 2, 200, 123)
+    print('\n\n\n')
+    
+    print('Question c:')
+    func(2, 0, 1, 200)
+    print('\n\n\n')
+    
+    print('Question d:')
+    fun(2, 0, 1, 10100, 123)
+    print('\n\n\n')
+    
